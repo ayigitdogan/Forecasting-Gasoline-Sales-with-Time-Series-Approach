@@ -1,0 +1,336 @@
+---
+title:  "Forecasting Gasoline Sales with Time Series Approach"
+author: "Ahmet Yiğit Doğan"
+date:   "2 May, 2022"
+output: 
+    html_document:
+        toc: true
+        toc_depth: 2
+        number_sections: true
+        toc_float: true
+        code_folding: hide
+        fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(  message     = FALSE,
+	                    warning     = FALSE,
+                        fig.align   = "center")
+```
+
+# Introduction
+
+This data-driven work is dedicated to investigating possible underlying reasons of fluctuations in unleaded gasoline sales of a major distributor by generating forecasts of quarterly sales in 2007, based on the historical data recorded from 2000 to 2006. The data used to fit models contains the following fields:
+
+- UGS   :   Unleaded gasoline sale in a given quarter
+- RNUV  :   An index indicating the rate of new unleaded gasoline using vehicles being added to the traffic in a quarter
+- PU    :   Average price (adjusted with an index) of a liter of unleaded gasoline in a quarter
+- PG    :   Average price (adjusted with an index) of a liter of diesel gasoline in a quarter
+- NUGV  :   Number of unleaded gasoline using vehicles in the traffic
+- NDGV  :   Number of diesel gasoline using vehicles in the traffic (per 1000 people)
+- NLPG  :   Number of LPG using vehicles in the traffic
+- GNPA  :   Agriculture component of Gross National Product (adjusted with an index)
+- GNPC  :   Commerce component of Gross National Product (adjusted with an index)
+- GNP   :   Grand total for GNP (agriculture, commerce and other components total)
+
+The R Markdown file used to generate this report is provided in the [GitHub repository](https://github.com/ayigitdogan/Forecasting-Gasoline-Sales-with-Time-Series-Approach) along with the *csv* file used in the below code.
+
+$~$
+
+# Library Imports and Data Preprocessing
+
+The mainly used libraries in the code are *"forecast"*, *"ggplot2"*, and *"tidyverse"*, along with several supplementary ones. The time series are first cleaned as *"data.frame"* objects, then stored in *"ts"* class to generate particular plots.
+
+```{r toolbox-and-data}
+
+# Library imports
+
+library(ggplot2)
+library(GGally)
+library(forecast)
+library(tidyverse)
+library(data.table)
+library(zoo)
+
+# Setting the working directory
+
+setwd(getwd())
+
+# Importing the data set
+
+df          <- fread("Data.csv")
+
+colnames(df)<- c("Quarter", "UGS", "RNUV", "NLPG", "PU", "PG",
+                 "NUGV", "NDGV", "GNPA", "GNPC", "GNP")
+
+df$Quarter  <- as.yearqtr(df$Quarter,format="%Y_Q%q")
+
+df          <- df    %>%
+    
+    mutate(across(where(is.character),
+                  str_remove_all,
+                  pattern = fixed(" ")))    %>%
+    
+    mutate_if(is.character,as.numeric)
+    
+str(df)
+
+```
+
+# Model Building
+
+```{r time-series, fig.show="hold", out.width="50%", fig.cap="Figure 1. Unleaded gasoline sales through years (in 1000 cubic meters)"}
+
+UGStsr <- ts(df[,"UGS"][1:28],
+             freq = 4,
+             start = c(2000,1),
+             end = c(2006,4))
+
+ts.plot(UGStsr,
+        xlab = "Year",
+        ylab = "UGS")
+
+```
+
+$~$
+
+From the above plot, it can be seen that UGS time series is not stationary due to its obviously declining trend through years. It poses a yearly seasonality since it draws a predictable pattern in each year: The sales make a peak at the 3rd quarter and decrease again in the following quarter. On the other hand, the variance of the series look somewhat stationary. By so far, it can be claimed that the sales data has a non-stationary mean and stationary variance. 
+
+```{r autocorrelation, fig.show="hold", out.width="50%", fig.cap="Figure 2. Autocorrelation Function of Quarterly Unleaded Gasoline Sales (Lags in Years)"}
+
+acf(UGStsr)
+
+```
+
+$~$
+
+The autocorrelation plot validates the assumptions made before: The strong correlation in the lag 0.25 implies the existence of trend and the high correlation in the lag 1 confirms the seasonal behavior. It can be noted that slightly higher correlations also exist at the lags 2 and 3, which can be regarded as repercussions of lag 1.
+
+```{r predictor-correlations, fig.show="hold", out.width="50%", fig.cap="Figure 3. Pairwise Correlation Plots of the Data"}
+
+# Inclusion of the trend variable
+
+df[,Trend:=1:.N]
+
+# Encoding the seasonality variable into the data
+
+df$Season <- as.factor(quarter(as.Date(df$Quarter)))
+
+ggpairs(df[,-1])
+
+```
+
+$~$
+
+The first thing can be noticed from the correlation plots is that except RNUV, GNPC, and GNP, all the features have significant correlation with the response variable UGS. Most of the correlated predictors seem like they have seasonal behaviors and it looks like NUGV potentially has a nonlinear relationship with UGS.
+
+```{r model01}
+
+# Building the first model with trend and seasonality
+
+model_01 <- lm(UGS~Trend+Season,
+              data=df)
+
+summary(model_01)
+
+```
+
+```{r residuals-model-01, fig.show="hold", out.width="50%", fig.cap="Figure 4. Residual Analysis for Model 01"}
+
+checkresiduals(model_01)
+
+```
+
+$~$
+
+The first trial with pure trend and seasonality gives a fairly good model, which has almost 90% adjusted R-squared value, yet the current state of residuals imply that it can possibly be enhanced by the elimination of correlations of the lags 1 and 2. Probably, introduction of the other variables will also have positive effects on the model. From this point on, a method similar to the "Forward Selection Method" in the machine learning domain will be used, that is, the significantly correlated features will be added to the model one by one. The change in the R-squared values will be checked at each step.
+
+```{r}
+
+# Adding NUGV
+
+model_02 <- lm(UGS~NUGV+Trend+Season,
+              data=df)
+
+# Adding NLPG
+
+model_03 <- lm(UGS~NLPG+NUGV+Trend+Season,
+              data=df)
+
+# Adding GNPA
+
+model_04 <- lm(UGS~GNPA+NLPG+NUGV+Trend+Season,
+              data=df)
+
+# Adding PG
+
+model_05 <- lm(UGS~PG+GNPA+NLPG+NUGV+Trend+Season,
+              data=df)
+
+# Adding NDGV
+
+model_06 <- lm(UGS~NDGV+PG+GNPA+NLPG+NUGV+Trend+Season,
+              data=df)
+
+# Adding PU
+
+model_07 <- lm(UGS~PU+NDGV+PG+GNPA+NLPG+NUGV+Trend+Season,
+              data=df)
+
+```
+
+Adjusted R-squared Values:
+
+- Model 2: `r summary(model_02)[["adj.r.squared"]]` (NUGV added)
+- Model 3: `r summary(model_03)[["adj.r.squared"]]` (NLPG added)
+- Model 4: `r summary(model_04)[["adj.r.squared"]]` (GNPA added)
+- Model 5: `r summary(model_05)[["adj.r.squared"]]` (PG added)
+- Model 6: `r summary(model_06)[["adj.r.squared"]]` (NDVG added)
+- Model 7: `r summary(model_07)[["adj.r.squared"]]` (PU added)
+
+After including all the significantly correlated variables, it can be seen that the seventh model performed worse than the previous one, implying that dropping one of the features may improve the performance. To select the one to be dropped, individual p-values can be checked, and the least statistically significant predictor can be dropped.
+
+```{r}
+
+summary(model_07)
+
+```
+
+$~$
+
+The summary table suggests that PU is the variable with highest p-value. Thus, from this point on, the study will be continued based on the sixth model which includes all significantly correlated variables but PU.
+
+The next step is checking the current residuals to investigate the possible improvements by lagged variable additions.
+
+```{r residuals-model-06, fig.show="hold", out.width="50%", fig.cap="Figure 4. Residual Analysis for Model 06"}
+
+checkresiduals(model_06)
+
+```
+
+$~$
+
+The ACF plot suggests that addition of 1 lagged response variable may have positive effect. This raises the following claim: The sales of the previous quarter has a remarkable effect on the considered quarter.
+
+```{r}
+
+# Adding 1 lagged UGS field
+
+df$UGS_1_lagged     <- lag(df$UGS, 1)
+
+model_08            <- lm(UGS~UGS_1_lagged+NDGV+PG+GNPA+NLPG+NUGV+Trend+Season,
+                          data=df)
+
+```
+
+$~$
+
+The 8th model gave the best performance so far in terms of adjusted R-squared value, which is `r summary(model_08)[["adj.r.squared"]]`, which confirms that previous quarter's sales is an important predictor.
+
+In the previous steps, it is claimed that a nonlinear relationship may be present between NUGV and UGS. Keeping that in mind, the final step of the model building in this study is to check the effect of adding the reciprocal of the NUGV column to the model.
+
+```{r}
+
+df$NUGV_reciprocal  <- 1/df$NUGV
+
+model_09            <- lm(UGS~NUGV_reciprocal+UGS_1_lagged+NDGV+PG+GNPA+NLPG+NUGV+Trend+Season,
+                          data=df)
+
+summary(model_09)
+
+```
+
+$~$
+
+Even the improvement in the adjusted R-squared is slight, the ninth model can be considered as a sufficiently good model, and it can be picked to use for forecasts.
+
+```{r}
+
+# Setting the ninth model as the final model
+
+finalModel <- model_09
+
+```
+
+
+# Forecasting
+
+```{r}
+
+# Making predictions for 2007
+
+for (i in 29: 32){
+    
+    df$Predictions  <- predict(finalModel, df)
+    df$UGS[i]       <- df$Predictions[i]
+    
+    if (i < 32){
+        df$UGS_1_lagged[i+1] <- df$Predictions[i]
+    }
+}
+
+df[29:32, c("Quarter", "Predictions")]
+
+```
+
+$~$
+
+```{r ts-w-pred, fig.show="hold", out.width="50%", fig.cap="Figure 5. Time Series of UGS with Predictions (in 1000 cubic meters)"}
+
+ggplot(df, aes(x=Quarter))      +
+    
+    geom_line(aes(y=UGS,
+                  color='real',
+                  group = 1))   +
+    
+    geom_line(aes(y=Predictions,
+                  color = 'predictions',
+                  group = 1) ) 
+
+```
+
+$~$
+
+The above plot shows that the predictions are consistent when the pattern of the time series is considered.
+
+```{r actual-vs-predicted-and-residuals, fig.show="hold", out.width="50%", fig.cap="Figure 6. Left: Residual Plot for the Final Model, Right: Actual vs. Predicted UGS Values"}
+
+# Residual analysis
+
+df$Residuals <- df$UGS - df$Predictions
+
+ggplot(df[1:28])                        +
+    
+    geom_point(aes(x = Predictions,
+                   y = Residuals))      +
+    
+    geom_abline(slope = 0,
+                color="red")            +
+    
+    labs(x = "Predicted UGS Values",
+         y = "Residuals")
+
+# Actual versus predicted UGS
+ 
+ggplot(df[1:28])                    +
+    
+    geom_point(aes(x = Predictions,
+                   y = UGS))        +
+    
+    geom_abline(slope = 1,
+                color = "red")      +
+    
+    labs(x = "Predicted Sales",
+         y = "Actual Sales")
+
+```
+
+$~$
+
+The final state of the residuals seems satisfactory in terms of their distributions above and below zero. They have a mean of `r mean(df$Residuals[2:28])`, which is fairly close to zero. Moreover, the distribution of the deviations from the actual values pose no problem, as can be seen in the right hand plot.
+
+# Conclusion
+
+After checking the final model, it can be concluded that unleaded gasoline sales in the given period is a simple time series and good results can be obtained with a quick study, keeping in the mind that variance of residuals and the minor autocorrelations for the remaining lags can still be improved with a more elaborate work.
+
+$~$
